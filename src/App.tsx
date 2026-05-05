@@ -1,6 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
-
-// ===== TYPES =====
+import { useState, useEffect, useCallback, useMemo } from 'react'
 
 interface IndexEntry {
   part: number
@@ -33,18 +31,41 @@ interface Data {
   parts: Part[]
 }
 
-type View =
-  | { type: 'home' }
-  | { type: 'part'; partIndex: number }
-  | { type: 'gallery'; partIndex: number; patternIndex: number }
+interface SlideOrderSlide {
+  src: string
+  sourceSlide: number
+  slideNumber: number
+}
 
-// ===== ICONS =====
+interface SlideOrderDiagnostics {
+  unresolved: number[]
+  missing: number[]
+  duplicates: Record<string, number[]>
+}
 
-const IconBack = () => (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round">
-    <path d="M19 12H5M12 5l-7 7 7 7" />
-  </svg>
-)
+interface SlideOrderPart {
+  part: number
+  totalSlides: number
+  slides: SlideOrderSlide[]
+  diagnostics?: SlideOrderDiagnostics
+}
+
+interface SlideOrderData {
+  parts: Record<string, SlideOrderPart>
+}
+
+interface FlatSlide {
+  src: string
+  index: number
+  sourceSlide?: number
+  actualSlideNumber?: number
+  unresolved?: boolean
+}
+
+type SlidePositions = Record<string, number>
+
+const ACTIVE_PART_KEY = 'brooks-reader-active-part'
+const POSITIONS_KEY = 'brooks-reader-slide-positions'
 
 const IconChevronLeft = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
@@ -60,124 +81,108 @@ const IconChevronRight = () => (
 
 const IconSun = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-    <circle cx="12" cy="12" r="5"/>
-    <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+    <circle cx="12" cy="12" r="5" />
+    <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" />
   </svg>
 )
 
 const IconMoon = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
   </svg>
 )
 
-// ===== HELPERS =====
-
-function fuzzyMatchPattern(section: string, patterns: Pattern[]): Pattern | null {
-  if (!patterns.length) return null
-  const q = section.toLowerCase().trim()
-  // Exact match
-  const exact = patterns.find(p => p.name.toLowerCase().trim() === q)
-  if (exact) return exact
-  // Includes match
-  const includes = patterns.find(p =>
-    p.name.toLowerCase().includes(q) || q.includes(p.name.toLowerCase())
-  )
-  if (includes) return includes
-  // Word overlap score
-  const qWords = q.split(/\s+/).filter(w => w.length > 2)
-  let best: Pattern | null = null
-  let bestScore = 0
-  for (const p of patterns) {
-    const pName = p.name.toLowerCase()
-    const score = qWords.filter(w => pName.includes(w)).length
-    if (score > bestScore) {
-      bestScore = score
-      best = p
-    }
-  }
-  if (bestScore > 0) return best
-  return null
-}
-
-function getAbbrForPattern(pattern: Pattern, indexEntries: IndexEntry[]): string {
-  const pName = pattern.name.toLowerCase()
-  const entry = indexEntries.find(e => {
-    const s = e.section.toLowerCase()
-    return s === pName || s.includes(pName) || pName.includes(s)
-  })
-  return entry?.abbr ?? ''
-}
+const IconExternal = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.1} strokeLinecap="round" strokeLinejoin="round">
+    <path d="M14 3h7v7" />
+    <path d="M10 14L21 3" />
+    <path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5" />
+  </svg>
+)
 
 function formatNum(n: number): string {
   return n.toLocaleString('en-US')
 }
 
-// ===== ALL INDEX ENTRIES (flat list from all parts) =====
-
-interface FlatEntry extends IndexEntry {
-  partLetters: string
-  thumbnail: string
-  patternIndex: number
-  partIndex: number
+function loadStoredPart(): number {
+  const raw = Number(localStorage.getItem(ACTIVE_PART_KEY))
+  return Number.isInteger(raw) && raw >= 0 && raw < 16 ? raw : 0
 }
 
-function buildFlatEntries(parts: Part[]): FlatEntry[] {
-  const result: FlatEntry[] = []
-  for (let pi = 0; pi < parts.length; pi++) {
-    const part = parts[pi]
-    for (const entry of part.index_entries) {
-      const matched = fuzzyMatchPattern(entry.section, part.patterns)
-      const patternIndex = matched ? part.patterns.indexOf(matched) : 0
-      result.push({
-        ...entry,
-        partLetters: part.letters,
-        thumbnail: matched?.thumbnail ?? (part.patterns[0]?.thumbnail ?? ''),
-        patternIndex,
-        partIndex: pi,
-      })
+function loadStoredPositions(): SlidePositions {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(POSITIONS_KEY) || '{}')
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function extractSortKey(src: string): [number, number] {
+  const m = src.match(/Part_0*(\d+)[^/]*\/slide_0*(\d+)\./i)
+  if (!m) return [9999, 9999]
+  return [parseInt(m[1], 10), parseInt(m[2], 10)]
+}
+
+function flattenPartSlides(part: Part, slideOrder: SlideOrderData | null): FlatSlide[] {
+  const orderedPart = slideOrder?.parts?.[part.dir]
+  if (orderedPart) {
+    return orderedPart.slides.map(slide => ({
+      src: slide.src,
+      index: slide.slideNumber,
+      sourceSlide: slide.sourceSlide,
+      actualSlideNumber: slide.slideNumber,
+    }))
+  }
+
+  const seen = new Set<string>()
+  const out: { src: string }[] = []
+  for (const p of part.patterns) {
+    for (const src of p.slides) {
+      if (seen.has(src)) continue
+      seen.add(src)
+      out.push({ src })
     }
   }
-  return result
+  out.sort((a, b) => {
+    const [pa, sa] = extractSortKey(a.src)
+    const [pb, sb] = extractSortKey(b.src)
+    return pa - pb || sa - sb
+  })
+  return out.map((s, i) => ({
+    src: s.src,
+    index: i + 1,
+    sourceSlide: i + 1,
+  }))
 }
 
-// ===== NAVBAR =====
+function findSlideIndex(slides: FlatSlide[], slideNumber: number): number {
+  if (!slides.length) return 0
+  const exact = slides.findIndex(s => s.index === slideNumber)
+  if (exact >= 0) return exact
+  const next = slides.findIndex(s => s.index > slideNumber)
+  return next >= 0 ? next : slides.length - 1
+}
 
 interface NavbarProps {
   data: Data | null
-  view: View
-  onHome: () => void
-  onBack: () => void
+  slideCount: number | null
   theme: 'dark' | 'light'
   onToggleTheme: () => void
 }
 
-function Navbar({ data, view, onHome, onBack, theme, onToggleTheme }: NavbarProps) {
+function Navbar({ data, slideCount, theme, onToggleTheme }: NavbarProps) {
   return (
     <nav className="navbar">
-      <div className="navbar-logo" onClick={onHome} role="button" tabIndex={0}
-        onKeyDown={e => e.key === 'Enter' && onHome()}>
-        <span className="navbar-logo-icon">📊</span>
+      <div className="navbar-logo">
         <span className="navbar-logo-title">Brooks PA</span>
         <span className="navbar-logo-sub">百科全书</span>
       </div>
 
-      {view.type !== 'home' && (
-        <>
-          <div className="navbar-divider" />
-          <button className="back-btn" onClick={onBack}>
-            <IconBack />
-            {view.type === 'gallery' ? '返回 Part' : '返回首页'}
-          </button>
-        </>
-      )}
-
-      <div className="navbar-divider" />
-
       {data && (
         <div className="navbar-stats">
           <span className="stat-chip">
-            <strong>{formatNum(data.total_slides)}</strong> slides
+            <strong>{formatNum(slideCount ?? data.total_slides)}</strong> slides
           </span>
           <span className="stat-chip">
             <strong>{data.total_patterns}</strong> patterns
@@ -198,364 +203,145 @@ function Navbar({ data, view, onHome, onBack, theme, onToggleTheme }: NavbarProp
   )
 }
 
-// ===== HOME VIEW =====
-
-interface HomeViewProps {
+interface PartSidebarProps {
   data: Data
+  slideOrder: SlideOrderData | null
+  activePartIndex: number
+  positions: SlidePositions
   onSelectPart: (partIndex: number) => void
-  onSelectEntry: (partIndex: number, patternIndex: number) => void
 }
 
-function HomeView({ data, onSelectPart, onSelectEntry }: HomeViewProps) {
-  const [filterPart, setFilterPart] = useState<number | null>(null)
-  const flatEntries = buildFlatEntries(data.parts)
-  const filtered = filterPart === null
-    ? flatEntries
-    : flatEntries.filter(e => e.part === filterPart)
-
+function PartSidebar({ data, slideOrder, activePartIndex, positions, onSelectPart }: PartSidebarProps) {
   return (
-    <div className="home-container fade-in">
-      {/* Hero */}
-      <section className="hero-section">
-        <div className="hero-badge">📈 Brooks Trading Course</div>
-        <h1 className="hero-title">Brooks Encyclopedia<br />of Chart Patterns</h1>
-        <p className="hero-subtitle">
-          完整的价格行为交易模式百科全书，包含图解幻灯片与详细注释
-        </p>
-        <div className="hero-stats">
-          <div className="hero-stat">
-            <span className="hero-stat-value">{formatNum(data.total_slides)}</span>
-            <span className="hero-stat-label">Slides</span>
-          </div>
-          <div className="hero-stat">
-            <span className="hero-stat-value">{data.total_patterns}</span>
-            <span className="hero-stat-label">Patterns</span>
-          </div>
-          <div className="hero-stat">
-            <span className="hero-stat-value">16</span>
-            <span className="hero-stat-label">Parts</span>
-          </div>
-        </div>
-      </section>
-
-      {/* Bento Grid */}
-      <div className="section-header">
-        <h2 className="section-title">16 Parts</h2>
-        <span className="section-count">{data.total_index_entries} entries</span>
+    <aside className="part-sidebar" aria-label="Parts">
+      <div className="sidebar-heading">
+        <span className="sidebar-kicker">Library</span>
+        <h1>16 Parts</h1>
       </div>
-      <div className="bento-grid">
+
+      <div className="part-list">
         {data.parts.map((part, idx) => {
-          const thumbs = part.patterns.slice(0, 3).map(p => p.thumbnail)
+          const partSlideCount = slideOrder?.parts?.[part.dir]?.slides.length ?? part.total_slides
+          const remembered = positions[part.dir]
+          const active = idx === activePartIndex
+
           return (
-            <div key={part.part} className="bento-card" onClick={() => onSelectPart(idx)}
-              role="button" tabIndex={0}
-              onKeyDown={e => e.key === 'Enter' && onSelectPart(idx)}>
-              <div className="bento-part-label">Part {part.part}</div>
-              <div className="bento-letters">{part.letters}</div>
-              <div className="bento-meta">
-                {part.index_entries.length} entries · {formatNum(part.total_slides)} slides
-              </div>
-              {thumbs.length > 0 && (
-                <div className="bento-thumb-strip">
-                  {thumbs.map((src, i) => (
-                    <img key={i} src={src} alt="" className="bento-thumb" loading="lazy" />
-                  ))}
-                </div>
-              )}
-            </div>
+            <button
+              key={part.dir}
+              className={`part-list-item${active ? ' active' : ''}`}
+              onClick={() => onSelectPart(idx)}
+              type="button"
+            >
+              <span className="part-list-num">{String(part.part).padStart(2, '0')}</span>
+              <span className="part-list-copy">
+                <span className="part-list-title">{part.letters}</span>
+                <span className="part-list-meta">
+                  {formatNum(partSlideCount)} slides
+                  {remembered ? ` · #${remembered}` : ''}
+                </span>
+              </span>
+            </button>
           )
         })}
       </div>
+    </aside>
+  )
+}
 
-      {/* Full Index Table */}
-      <section className="index-section">
-        <div className="index-header">
-          <div className="section-header" style={{ margin: 0 }}>
-            <h2 className="section-title">完整索引 Contents</h2>
-            <span className="section-count">{filtered.length} entries</span>
+interface ReaderViewProps {
+  part: Part
+  slides: FlatSlide[]
+  currentSlideIndex: number
+  onSlideIndexChange: (index: number) => void
+  onOpenSource: () => void
+}
+
+function ReaderView({
+  part,
+  slides,
+  currentSlideIndex,
+  onSlideIndexChange,
+  onOpenSource,
+}: ReaderViewProps) {
+  const current = slides[currentSlideIndex]
+  const canPrev = currentSlideIndex > 0
+  const canNext = currentSlideIndex < slides.length - 1
+
+  return (
+    <main className="reader-main">
+      <section className="reader-toolbar">
+        <div className="reader-title-group">
+          <span className="reader-part-badge">Part {part.part}</span>
+          <div>
+            <h2>{part.letters.replace('–', ' to ')}</h2>
+            <p>
+              {formatNum(currentSlideIndex + 1)} / {formatNum(slides.length)}
+              {current ? ` · Slide ${current.index}` : ''}
+            </p>
           </div>
         </div>
 
-        {/* Part filter tabs */}
-        <div className="part-filter-tabs">
+        <div className="reader-actions">
           <button
-            className={`filter-tab${filterPart === null ? ' active' : ''}`}
-            onClick={() => setFilterPart(null)}
-          >
-            全部
-          </button>
-          {data.parts.map(part => (
-            <button
-              key={part.part}
-              className={`filter-tab${filterPart === part.part ? ' active' : ''}`}
-              onClick={() => setFilterPart(part.part)}
-            >
-              Part {part.part}
-            </button>
-          ))}
-        </div>
-
-        <div className="index-table-wrap">
-          <table className="index-table">
-            <thead>
-              <tr>
-                <th>Slide</th>
-                <th>Part</th>
-                <th>Section Name</th>
-                <th>Abbreviation</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((entry, i) => (
-                <tr
-                  key={`${entry.part}-${i}`}
-                  onClick={() => onSelectEntry(entry.partIndex, entry.patternIndex)}
-                >
-                  <td className="table-thumb-cell">
-                    {entry.thumbnail && (
-                      <img
-                        src={entry.thumbnail}
-                        alt=""
-                        className="table-thumb"
-                        loading="lazy"
-                      />
-                    )}
-                  </td>
-                  <td>
-                    <span className="table-part-badge">{entry.part}</span>
-                  </td>
-                  <td className="table-section-name">{entry.section}</td>
-                  <td>
-                    {entry.abbr && entry.abbr !== entry.section && (
-                      <span className="table-abbr">{entry.abbr}</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
-    </div>
-  )
-}
-
-// ===== PART VIEW =====
-
-interface PartViewProps {
-  data: Data
-  partIndex: number
-  onSelectPattern: (patternIndex: number) => void
-}
-
-function PartView({ data, partIndex, onSelectPattern }: PartViewProps) {
-  const part = data.parts[partIndex]
-
-  return (
-    <div className="part-container fade-in">
-      <div className="part-header">
-        <div className="part-header-top">
-          <span className="part-number-badge">Part {part.part}</span>
-          <h1 className="part-title">
-            Part {part.part} — {part.letters.replace('–', ' to ')}
-          </h1>
-        </div>
-        <div className="part-meta">
-          <span className="part-meta-item">
-            <strong>{part.patterns.length}</strong>&nbsp;patterns
-          </span>
-          <span style={{ color: 'var(--border)' }}>·</span>
-          <span className="part-meta-item">
-            <strong>{formatNum(part.total_slides)}</strong>&nbsp;slides
-          </span>
-          <span style={{ color: 'var(--border)' }}>·</span>
-          <span className="part-meta-item">
-            <strong>{part.index_entries.length}</strong>&nbsp;index entries
-          </span>
-        </div>
-      </div>
-
-      <div className="pattern-grid">
-        {part.patterns.map((pattern, idx) => {
-          const abbr = getAbbrForPattern(pattern, part.index_entries)
-          return (
-            <div
-              key={pattern.slug}
-              className="pattern-card"
-              onClick={() => onSelectPattern(idx)}
-              role="button"
-              tabIndex={0}
-              onKeyDown={e => e.key === 'Enter' && onSelectPattern(idx)}
-            >
-              <div className="pattern-card-thumb-wrap">
-                <img
-                  src={pattern.thumbnail}
-                  alt={pattern.name}
-                  className="pattern-card-thumb"
-                  loading="lazy"
-                />
-                <span className="slide-count-badge">
-                  {pattern.slide_count} slides
-                </span>
-              </div>
-              <div className="pattern-card-body">
-                <div className="pattern-card-name">{pattern.name}</div>
-                {abbr && abbr !== pattern.name && (
-                  <div className="pattern-card-abbr">{abbr}</div>
-                )}
-              </div>
-            </div>
-          )
-        })}
-      </div>
-    </div>
-  )
-}
-
-// ===== GALLERY VIEW =====
-
-interface GalleryViewProps {
-  data: Data
-  partIndex: number
-  patternIndex: number
-  onBackToPart: () => void
-}
-
-function GalleryView({ data, partIndex, patternIndex, onBackToPart }: GalleryViewProps) {
-  const part = data.parts[partIndex]
-  const pattern = part.patterns[patternIndex]
-  const [current, setCurrent] = useState(0)
-  const sidebarRef = useRef<HTMLDivElement>(null)
-  const activeThumbnailRef = useRef<HTMLButtonElement>(null)
-  const mainImgRef = useRef<HTMLImageElement>(null)
-
-  const total = pattern.slides.length
-
-  const goTo = useCallback((idx: number) => {
-    if (idx < 0 || idx >= total) return
-    setCurrent(idx)
-  }, [total])
-
-  // Scroll active thumbnail into view
-  useEffect(() => {
-    if (activeThumbnailRef.current && sidebarRef.current) {
-      activeThumbnailRef.current.scrollIntoView({
-        behavior: 'smooth',
-        block: 'nearest',
-      })
-    }
-  }, [current])
-
-  // Keyboard navigation
-  useEffect(() => {
-    const handler = (e: globalThis.KeyboardEvent) => {
-      if (e.key === 'ArrowLeft') goTo(current - 1)
-      else if (e.key === 'ArrowRight') goTo(current + 1)
-    }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [current, goTo])
-
-  // Reset to slide 0 when pattern changes
-  useEffect(() => {
-    setCurrent(0)
-  }, [patternIndex])
-
-  const abbr = getAbbrForPattern(pattern, part.index_entries)
-
-  return (
-    <div className="gallery-layout fade-in">
-      {/* Top bar */}
-      <div className="gallery-topbar">
-        <button className="back-btn" onClick={onBackToPart}>
-          <IconBack />
-          返回 Part {part.part}
-        </button>
-        <div className="gallery-pattern-name">
-          {pattern.name}
-          {abbr && abbr !== pattern.name && (
-            <span style={{ marginLeft: 10, fontSize: 12, color: 'var(--accent)', fontFamily: 'monospace' }}>
-              {abbr}
-            </span>
-          )}
-        </div>
-        <div className="gallery-slide-counter">
-          {current + 1} / {total}
-        </div>
-      </div>
-
-      {/* Body */}
-      <div className="gallery-body">
-        {/* Sidebar */}
-        <div className="gallery-sidebar" ref={sidebarRef}>
-          {pattern.slides.map((slide, idx) => (
-            <button
-              key={idx}
-              ref={idx === current ? activeThumbnailRef : undefined}
-              className={`sidebar-thumb-btn${idx === current ? ' active' : ''}`}
-              onClick={() => goTo(idx)}
-              title={`Slide ${idx + 1}`}
-            >
-              <img
-                src={slide}
-                alt={`Slide ${idx + 1}`}
-                className="sidebar-thumb-img"
-                loading="lazy"
-              />
-              <span className="sidebar-thumb-num">{idx + 1}</span>
-            </button>
-          ))}
-        </div>
-
-        {/* Main viewer */}
-        <div className="gallery-main">
-          <button
-            className="gallery-nav-btn prev"
-            onClick={() => goTo(current - 1)}
-            disabled={current === 0}
+            className="icon-btn"
+            onClick={() => onSlideIndexChange(currentSlideIndex - 1)}
+            disabled={!canPrev}
+            type="button"
             aria-label="Previous slide"
+            title="上一页"
           >
             <IconChevronLeft />
           </button>
 
-          <img
-            ref={mainImgRef}
-            key={pattern.slides[current]}
-            src={pattern.slides[current]}
-            alt={`${pattern.name} — Slide ${current + 1}`}
-            className="gallery-img"
-          />
-
           <button
-            className="gallery-nav-btn next"
-            onClick={() => goTo(current + 1)}
-            disabled={current === total - 1}
+            className="icon-btn"
+            onClick={() => onSlideIndexChange(currentSlideIndex + 1)}
+            disabled={!canNext}
+            type="button"
             aria-label="Next slide"
+            title="下一页"
           >
             <IconChevronRight />
           </button>
-        </div>
-      </div>
 
-      {/* Caption */}
-      <div className="gallery-caption">
-        <p className="caption-text">
-          <strong>{pattern.name}</strong>
-          {abbr && abbr !== pattern.name && ` · ${abbr}`}
-          {' · '}Slide <strong>{current + 1}</strong> of <strong>{total}</strong>
-          {' · '}Part {part.part}: {part.letters}
-        </p>
-      </div>
-    </div>
+          <button
+            className="icon-btn source-btn"
+            onClick={onOpenSource}
+            disabled={!current}
+            type="button"
+            aria-label="Open source image"
+            title="打开原图"
+          >
+            <IconExternal />
+          </button>
+        </div>
+      </section>
+
+      <section className="reader-stage">
+        {current ? (
+          <img
+            key={current.src}
+            className="reader-img"
+            src={current.src}
+            alt={`Part ${part.part} Slide ${current.index}`}
+          />
+        ) : (
+          <div className="empty-stage">No slides available</div>
+        )}
+      </section>
+
+    </main>
   )
 }
 
-// ===== ROOT APP =====
-
 export default function App() {
   const [data, setData] = useState<Data | null>(null)
+  const [slideOrder, setSlideOrder] = useState<SlideOrderData | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [view, setView] = useState<View>({ type: 'home' })
+  const [activePartIndex, setActivePartIndex] = useState(loadStoredPart)
+  const [currentSlideIndex, setCurrentSlideIndex] = useState(0)
+  const [positions, setPositions] = useState<SlidePositions>(loadStoredPositions)
+  const [restoredPartDir, setRestoredPartDir] = useState<string | null>(null)
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
     return (localStorage.getItem('encyclopedia-theme') as 'dark' | 'light') ?? 'dark'
   })
@@ -566,38 +352,100 @@ export default function App() {
   }, [theme])
 
   const toggleTheme = useCallback(() => {
-    setTheme(t => t === 'dark' ? 'light' : 'dark')
+    setTheme(t => (t === 'dark' ? 'light' : 'dark'))
   }, [])
 
   useEffect(() => {
-    fetch('/data.json')
-      .then(r => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`)
-        return r.json()
-      })
-      .then((d: Data) => setData(d))
-      .catch(err => setError(String(err)))
-  }, [])
+    let cancelled = false
 
-  const goHome = useCallback(() => setView({ type: 'home' }), [])
+    async function loadData() {
+      try {
+        const dataResponse = await fetch('/data.json')
+        if (!dataResponse.ok) throw new Error(`HTTP ${dataResponse.status}`)
+        const nextData: Data = await dataResponse.json()
 
-  const goBack = useCallback(() => {
-    if (view.type === 'gallery') {
-      setView({ type: 'part', partIndex: view.partIndex })
-    } else {
-      setView({ type: 'home' })
+        let nextSlideOrder: SlideOrderData | null = null
+        try {
+          const orderResponse = await fetch('/slide-order.json')
+          if (orderResponse.ok) nextSlideOrder = await orderResponse.json()
+        } catch {
+          nextSlideOrder = null
+        }
+
+        if (!cancelled) {
+          setSlideOrder(nextSlideOrder)
+          setData(nextData)
+        }
+      } catch (err) {
+        if (!cancelled) setError(String(err))
+      }
     }
-  }, [view])
 
-  const goToPart = useCallback((partIndex: number) => {
-    setView({ type: 'part', partIndex })
+    loadData()
+
+    return () => {
+      cancelled = true
+    }
   }, [])
 
-  const goToGallery = useCallback((partIndex: number, patternIndex: number) => {
-    setView({ type: 'gallery', partIndex, patternIndex })
+  const activePart = data?.parts[activePartIndex] ?? null
+  const slides = useMemo(() => {
+    if (!activePart) return []
+    return flattenPartSlides(activePart, slideOrder)
+  }, [activePart, slideOrder])
+  const currentSlide = slides[currentSlideIndex]
+  const displayedSlideCount = slideOrder
+    ? Object.values(slideOrder.parts).reduce((sum, part) => sum + part.slides.length, 0)
+    : data?.total_slides ?? null
+
+  useEffect(() => {
+    localStorage.setItem(ACTIVE_PART_KEY, String(activePartIndex))
+  }, [activePartIndex])
+
+  useEffect(() => {
+    if (!activePart || !slides.length) return
+    const remembered = positions[activePart.dir]
+    setCurrentSlideIndex(remembered ? findSlideIndex(slides, remembered) : 0)
+    setRestoredPartDir(activePart.dir)
+  }, [activePart, positions, slides])
+
+  useEffect(() => {
+    if (!activePart || !currentSlide || restoredPartDir !== activePart.dir) return
+
+    setPositions(prev => {
+      if (prev[activePart.dir] === currentSlide.index) return prev
+      const next = { ...prev, [activePart.dir]: currentSlide.index }
+      localStorage.setItem(POSITIONS_KEY, JSON.stringify(next))
+      return next
+    })
+  }, [activePart, currentSlide, restoredPartDir])
+
+  const setSafeSlideIndex = useCallback((index: number) => {
+    setCurrentSlideIndex(Math.max(0, Math.min(slides.length - 1, index)))
+  }, [slides.length])
+
+  const selectPart = useCallback((partIndex: number) => {
+    setRestoredPartDir(null)
+    setActivePartIndex(partIndex)
   }, [])
 
-  // Loading / error states
+  const openSource = useCallback(() => {
+    if (currentSlide) window.open(currentSlide.src, '_blank', 'noopener,noreferrer')
+  }, [currentSlide])
+
+  useEffect(() => {
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.target instanceof HTMLInputElement) return
+      if (event.key === 'ArrowLeft') setSafeSlideIndex(currentSlideIndex - 1)
+      else if (event.key === 'ArrowRight') setSafeSlideIndex(currentSlideIndex + 1)
+      else if (event.key === 'Home') setSafeSlideIndex(0)
+      else if (event.key === 'End') setSafeSlideIndex(slides.length - 1)
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [currentSlideIndex, setSafeSlideIndex, slides.length])
+
   if (error) {
     return (
       <div className="loading-screen">
@@ -608,43 +456,41 @@ export default function App() {
     )
   }
 
-  if (!data) {
+  if (!data || !activePart) {
     return (
       <div className="loading-screen">
         <div className="loading-spinner" />
-        <div>Loading encyclopedia…</div>
+        <div>Loading encyclopedia...</div>
       </div>
     )
   }
 
   return (
     <>
-      <Navbar data={data} view={view} onHome={goHome} onBack={goBack} theme={theme} onToggleTheme={toggleTheme} />
+      <Navbar
+        data={data}
+        slideCount={displayedSlideCount}
+        theme={theme}
+        onToggleTheme={toggleTheme}
+      />
 
-      {view.type === 'home' && (
-        <HomeView
+      <div className="reader-shell">
+        <PartSidebar
           data={data}
-          onSelectPart={goToPart}
-          onSelectEntry={(partIndex, patternIndex) => goToGallery(partIndex, patternIndex)}
+          slideOrder={slideOrder}
+          activePartIndex={activePartIndex}
+          positions={positions}
+          onSelectPart={selectPart}
         />
-      )}
 
-      {view.type === 'part' && (
-        <PartView
-          data={data}
-          partIndex={view.partIndex}
-          onSelectPattern={idx => goToGallery(view.partIndex, idx)}
+        <ReaderView
+          part={activePart}
+          slides={slides}
+          currentSlideIndex={currentSlideIndex}
+          onSlideIndexChange={setSafeSlideIndex}
+          onOpenSource={openSource}
         />
-      )}
-
-      {view.type === 'gallery' && (
-        <GalleryView
-          data={data}
-          partIndex={view.partIndex}
-          patternIndex={view.patternIndex}
-          onBackToPart={() => setView({ type: 'part', partIndex: view.partIndex })}
-        />
-      )}
+      </div>
     </>
   )
 }
