@@ -51,6 +51,7 @@ interface SlideOrderPart {
 }
 
 interface SlideOrderData {
+  generatedAt?: string
   parts: Record<string, SlideOrderPart>
 }
 
@@ -66,6 +67,26 @@ type SlidePositions = Record<string, number>
 
 const ACTIVE_PART_KEY = 'brooks-reader-active-part'
 const POSITIONS_KEY = 'brooks-reader-slide-positions'
+
+interface SearchIndexEntry {
+  part: number
+  dir: string
+  letters: string
+  slideNumber: number
+  src: string
+  text: string
+}
+
+interface SearchIndexData {
+  generatedAt: string
+  totalSlides: number
+  entries: SearchIndexEntry[]
+}
+
+interface SearchResult extends SearchIndexEntry {
+  score: number
+  snippet: string
+}
 
 const IconChevronLeft = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
@@ -100,8 +121,28 @@ const IconExternal = () => (
   </svg>
 )
 
+const IconSearch = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="11" cy="11" r="7" />
+    <path d="M20 20l-3.8-3.8" />
+  </svg>
+)
+
+const IconClose = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round">
+    <path d="M18 6L6 18" />
+    <path d="M6 6l12 12" />
+  </svg>
+)
+
 function formatNum(n: number): string {
   return n.toLocaleString('en-US')
+}
+
+function versionedSrc(src: string, version: string | null): string {
+  if (!version) return src
+  const separator = src.includes('?') ? '&' : '?'
+  return `${src}${separator}v=${encodeURIComponent(version)}`
 }
 
 function loadStoredPart(): number {
@@ -162,6 +203,42 @@ function findSlideIndex(slides: FlatSlide[], slideNumber: number): number {
   if (exact >= 0) return exact
   const next = slides.findIndex(s => s.index > slideNumber)
   return next >= 0 ? next : slides.length - 1
+}
+
+function makeSnippet(text: string, query: string): string {
+  const clean = text.replace(/\s+/g, ' ').trim()
+  if (!clean) return ''
+  const lower = clean.toLowerCase()
+  const firstTerm = query.toLowerCase().split(/\s+/).find(Boolean) ?? ''
+  const index = firstTerm ? lower.indexOf(firstTerm) : -1
+  const start = index >= 0 ? Math.max(0, index - 70) : 0
+  return clean.slice(start, start + 180)
+}
+
+function searchEntries(entries: SearchIndexEntry[], query: string): SearchResult[] {
+  const terms = query.toLowerCase().split(/\s+/).filter(term => term.length >= 2)
+  if (!terms.length) return []
+
+  const results: SearchResult[] = []
+  for (const entry of entries) {
+    const haystack = `${entry.letters} ${entry.text}`.toLowerCase()
+    if (!terms.every(term => haystack.includes(term))) continue
+
+    const score = terms.reduce((sum, term) => {
+      const exactCount = haystack.split(term).length - 1
+      return sum + exactCount * 10 + (entry.text.toLowerCase().startsWith(term) ? 8 : 0)
+    }, 0)
+
+    results.push({
+      ...entry,
+      score,
+      snippet: makeSnippet(entry.text, query),
+    })
+  }
+
+  return results
+    .sort((a, b) => b.score - a.score || a.part - b.part || a.slideNumber - b.slideNumber)
+    .slice(0, 80)
 }
 
 interface NavbarProps {
@@ -252,16 +329,22 @@ interface ReaderViewProps {
   part: Part
   slides: FlatSlide[]
   currentSlideIndex: number
+  assetVersion: string | null
+  searchOpen: boolean
   onSlideIndexChange: (index: number) => void
   onOpenSource: () => void
+  onToggleSearch: () => void
 }
 
 function ReaderView({
   part,
   slides,
   currentSlideIndex,
+  assetVersion,
+  searchOpen,
   onSlideIndexChange,
   onOpenSource,
+  onToggleSearch,
 }: ReaderViewProps) {
   const current = slides[currentSlideIndex]
   const canPrev = currentSlideIndex > 0
@@ -314,6 +397,16 @@ function ReaderView({
           >
             <IconExternal />
           </button>
+
+          <button
+            className={`icon-btn${searchOpen ? ' active' : ''}`}
+            onClick={onToggleSearch}
+            type="button"
+            aria-label="Search slide text"
+            title="搜索图片文字"
+          >
+            <IconSearch />
+          </button>
         </div>
       </section>
 
@@ -322,7 +415,7 @@ function ReaderView({
           <img
             key={current.src}
             className="reader-img"
-            src={current.src}
+            src={versionedSrc(current.src, assetVersion)}
             alt={`Part ${part.part} Slide ${current.index}`}
           />
         ) : (
@@ -334,9 +427,108 @@ function ReaderView({
   )
 }
 
+interface SearchPanelProps {
+  open: boolean
+  searchIndex: SearchIndexData | null
+  searchError: string | null
+  query: string
+  results: SearchResult[]
+  assetVersion: string | null
+  onQueryChange: (query: string) => void
+  onClose: () => void
+  onSelectResult: (result: SearchResult) => void
+}
+
+function SearchPanel({
+  open,
+  searchIndex,
+  searchError,
+  query,
+  results,
+  assetVersion,
+  onQueryChange,
+  onClose,
+  onSelectResult,
+}: SearchPanelProps) {
+  if (!open) return null
+
+  const hasQuery = query.trim().length >= 2
+
+  return (
+    <aside className="search-panel" aria-label="Search slide text">
+      <div className="search-panel-header">
+        <div>
+          <span className="search-kicker">OCR Search</span>
+          <h2>搜索图片文字</h2>
+        </div>
+        <button className="icon-btn" onClick={onClose} type="button" aria-label="Close search" title="关闭">
+          <IconClose />
+        </button>
+      </div>
+
+      <div className="search-box">
+        <IconSearch />
+        <input
+          autoFocus
+          value={query}
+          onChange={event => onQueryChange(event.target.value)}
+          placeholder="输入图片上的英文，例如 wedge、breakout、midday"
+        />
+      </div>
+
+      <div className="search-status">
+        {searchError
+          ? searchError
+          : searchIndex
+          ? `${formatNum(searchIndex.totalSlides)} slides indexed`
+          : '本地 search-index.json 还没有加载'}
+        {hasQuery ? ` · ${formatNum(results.length)} results` : ''}
+      </div>
+
+      <div className="search-results">
+        {!searchIndex && (
+          <div className="search-empty">需要先生成本地 OCR 索引。</div>
+        )}
+
+        {searchIndex && !hasQuery && (
+          <div className="search-empty">输入至少两个字符开始搜索。</div>
+        )}
+
+        {searchIndex && hasQuery && results.length === 0 && (
+          <div className="search-empty">没有找到匹配图片。</div>
+        )}
+
+        {results.map(result => (
+          <button
+            key={`${result.dir}-${result.slideNumber}`}
+            className="search-result"
+            onClick={() => onSelectResult(result)}
+            type="button"
+          >
+            <img
+              src={versionedSrc(result.src, assetVersion)}
+              alt={`Part ${result.part} Slide ${result.slideNumber}`}
+              loading="lazy"
+            />
+            <span className="search-result-copy">
+              <strong>Part {result.part} · Slide {result.slideNumber}</strong>
+              <span>{result.letters}</span>
+              <small>{result.snippet || 'OCR text matched this slide.'}</small>
+            </span>
+          </button>
+        ))}
+      </div>
+    </aside>
+  )
+}
+
 export default function App() {
   const [data, setData] = useState<Data | null>(null)
   const [slideOrder, setSlideOrder] = useState<SlideOrderData | null>(null)
+  const [searchIndex, setSearchIndex] = useState<SearchIndexData | null>(null)
+  const [searchError, setSearchError] = useState<string | null>(null)
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [activePartIndex, setActivePartIndex] = useState(loadStoredPart)
   const [currentSlideIndex, setCurrentSlideIndex] = useState(0)
@@ -366,7 +558,7 @@ export default function App() {
 
         let nextSlideOrder: SlideOrderData | null = null
         try {
-          const orderResponse = await fetch('/slide-order.json')
+          const orderResponse = await fetch(`/slide-order.json?v=${Date.now()}`)
           if (orderResponse.ok) nextSlideOrder = await orderResponse.json()
         } catch {
           nextSlideOrder = null
@@ -388,12 +580,39 @@ export default function App() {
     }
   }, [])
 
+  useEffect(() => {
+    if (!searchOpen || searchIndex || searchError) return
+
+    let cancelled = false
+
+    async function loadSearchIndex() {
+      try {
+        const response = await fetch(`/search-index.json?v=${Date.now()}`)
+        if (!response.ok) throw new Error(`search-index.json HTTP ${response.status}`)
+        const nextIndex: SearchIndexData = await response.json()
+        if (!cancelled) setSearchIndex(nextIndex)
+      } catch (err) {
+        if (!cancelled) setSearchError(String(err))
+      }
+    }
+
+    loadSearchIndex()
+
+    return () => {
+      cancelled = true
+    }
+  }, [searchError, searchIndex, searchOpen])
+
   const activePart = data?.parts[activePartIndex] ?? null
   const slides = useMemo(() => {
     if (!activePart) return []
     return flattenPartSlides(activePart, slideOrder)
   }, [activePart, slideOrder])
   const currentSlide = slides[currentSlideIndex]
+  const assetVersion = slideOrder?.generatedAt ?? null
+  const searchResults = useMemo(() => {
+    return searchIndex ? searchEntries(searchIndex.entries, searchQuery) : []
+  }, [searchIndex, searchQuery])
   const displayedSlideCount = slideOrder
     ? Object.values(slideOrder.parts).reduce((sum, part) => sum + part.slides.length, 0)
     : data?.total_slides ?? null
@@ -430,8 +649,27 @@ export default function App() {
   }, [])
 
   const openSource = useCallback(() => {
-    if (currentSlide) window.open(currentSlide.src, '_blank', 'noopener,noreferrer')
-  }, [currentSlide])
+    if (currentSlide) window.open(versionedSrc(currentSlide.src, assetVersion), '_blank', 'noopener,noreferrer')
+  }, [assetVersion, currentSlide])
+
+  const selectSearchResult = useCallback((result: SearchResult) => {
+    const partIndex = data?.parts.findIndex(part => part.dir === result.dir) ?? -1
+    if (partIndex < 0) return
+
+    setSearchOpen(false)
+    setPositions(prev => {
+      const next = { ...prev, [result.dir]: result.slideNumber }
+      localStorage.setItem(POSITIONS_KEY, JSON.stringify(next))
+      return next
+    })
+
+    if (partIndex === activePartIndex) {
+      setSafeSlideIndex(findSlideIndex(slides, result.slideNumber))
+    } else {
+      setRestoredPartDir(null)
+      setActivePartIndex(partIndex)
+    }
+  }, [activePartIndex, data, setSafeSlideIndex, slides])
 
   useEffect(() => {
     const handleKeyDown = (event: globalThis.KeyboardEvent) => {
@@ -440,6 +678,10 @@ export default function App() {
       else if (event.key === 'ArrowRight') setSafeSlideIndex(currentSlideIndex + 1)
       else if (event.key === 'Home') setSafeSlideIndex(0)
       else if (event.key === 'End') setSafeSlideIndex(slides.length - 1)
+      else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'f') {
+        event.preventDefault()
+        setSearchOpen(true)
+      }
     }
 
     window.addEventListener('keydown', handleKeyDown)
@@ -487,8 +729,23 @@ export default function App() {
           part={activePart}
           slides={slides}
           currentSlideIndex={currentSlideIndex}
+          assetVersion={assetVersion}
+          searchOpen={searchOpen}
           onSlideIndexChange={setSafeSlideIndex}
           onOpenSource={openSource}
+          onToggleSearch={() => setSearchOpen(open => !open)}
+        />
+
+        <SearchPanel
+          open={searchOpen}
+          searchIndex={searchIndex}
+          searchError={searchError}
+          query={searchQuery}
+          results={searchResults}
+          assetVersion={assetVersion}
+          onQueryChange={setSearchQuery}
+          onClose={() => setSearchOpen(false)}
+          onSelectResult={selectSearchResult}
         />
       </div>
     </>

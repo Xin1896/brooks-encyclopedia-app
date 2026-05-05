@@ -197,7 +197,7 @@ img {
 .reader-shell {
   height: calc(100vh - var(--navbar-h));
   display: grid;
-  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr) auto;
   background:
     linear-gradient(90deg, rgba(214, 164, 58, 0.05), transparent 34%),
     var(--bg);
@@ -385,6 +385,12 @@ img {
   cursor: not-allowed;
 }
 
+.icon-btn.active {
+  background: rgba(214, 164, 58, 0.18);
+  border-color: rgba(214, 164, 58, 0.5);
+  color: var(--accent);
+}
+
 .source-btn {
   margin-left: 2px;
 }
@@ -415,6 +421,163 @@ img {
   padding: 28px;
   border: 1px dashed var(--border);
   border-radius: 8px;
+}
+
+.search-panel {
+  width: min(390px, 34vw);
+  min-width: 330px;
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  border-left: 1px solid var(--border);
+  background: var(--panel);
+  box-shadow: -18px 0 48px rgba(0, 0, 0, 0.22);
+  overflow: hidden;
+}
+
+.search-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.search-kicker {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--accent-2);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.search-panel-header h2 {
+  font-size: 17px;
+  line-height: 1.15;
+  letter-spacing: 0;
+}
+
+.search-box {
+  height: 42px;
+  margin: 14px 14px 10px;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--muted);
+}
+
+.search-box:focus-within {
+  border-color: rgba(214, 164, 58, 0.58);
+  color: var(--accent);
+}
+
+.search-box svg {
+  width: 17px;
+  height: 17px;
+}
+
+.search-box input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.search-box input::placeholder {
+  color: var(--muted);
+}
+
+.search-status {
+  padding: 0 16px 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.search-results {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 12px 14px;
+}
+
+.search-empty {
+  margin: 10px 2px;
+  padding: 18px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+.search-result {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 126px minmax(0, 1fr);
+  gap: 10px;
+  padding: 8px;
+  margin-bottom: 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--text-2);
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.16s ease, border-color 0.16s ease, transform 0.16s ease;
+}
+
+.search-result:hover {
+  background: var(--panel-3);
+  border-color: rgba(214, 164, 58, 0.46);
+  transform: translateY(-1px);
+}
+
+.search-result img {
+  width: 126px;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--border-soft);
+}
+
+.search-result-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.search-result-copy strong {
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.search-result-copy span {
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.search-result-copy small {
+  display: -webkit-box;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
 }
 
 .loading-screen {
@@ -494,6 +657,14 @@ img {
   .reader-main {
     min-height: calc(100vh - var(--navbar-h) - 86px);
   }
+
+  .search-panel {
+    position: fixed;
+    inset: var(--navbar-h) 0 0 auto;
+    z-index: 20;
+    width: min(390px, 100vw);
+    min-width: 0;
+  }
 }
 
 @media (max-width: 680px) {
@@ -521,6 +692,14 @@ img {
 
   .reader-stage {
     padding: 10px;
+  }
+
+  .search-result {
+    grid-template-columns: 108px minmax(0, 1fr);
+  }
+
+  .search-result img {
+    width: 108px;
   }
 
 }
