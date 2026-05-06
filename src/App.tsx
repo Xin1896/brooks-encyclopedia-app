@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 
 interface IndexEntry {
   part: number
@@ -67,6 +67,8 @@ type SlidePositions = Record<string, number>
 
 const ACTIVE_PART_KEY = 'brooks-reader-active-part'
 const POSITIONS_KEY = 'brooks-reader-slide-positions'
+const SEARCH_HISTORY_KEY = 'brooks-reader-search-history'
+const SEARCH_HISTORY_LIMIT = 12
 
 interface SearchIndexEntry {
   part: number
@@ -86,6 +88,17 @@ interface SearchIndexData {
 interface SearchResult extends SearchIndexEntry {
   score: number
   snippet: string
+}
+
+interface SearchHistoryEntry {
+  query: string
+  resultCount: number
+  updatedAt: number
+}
+
+interface ResultPack {
+  query: string
+  results: SearchResult[]
 }
 
 const IconChevronLeft = () => (
@@ -156,6 +169,19 @@ function loadStoredPositions(): SlidePositions {
     return parsed && typeof parsed === 'object' ? parsed : {}
   } catch {
     return {}
+  }
+}
+
+function loadStoredSearchHistory(): SearchHistoryEntry[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(SEARCH_HISTORY_KEY) || '[]')
+    return Array.isArray(parsed)
+      ? parsed
+          .filter(item => item && typeof item.query === 'string')
+          .slice(0, SEARCH_HISTORY_LIMIT)
+      : []
+  } catch {
+    return []
   }
 }
 
@@ -431,24 +457,32 @@ interface SearchPanelProps {
   open: boolean
   searchIndex: SearchIndexData | null
   searchError: string | null
+  history: SearchHistoryEntry[]
   query: string
   results: SearchResult[]
   assetVersion: string | null
   onQueryChange: (query: string) => void
   onClose: () => void
   onSelectResult: (result: SearchResult) => void
+  onViewAllResults: () => void
+  onUseHistory: (query: string) => void
+  onClearHistory: () => void
 }
 
 function SearchPanel({
   open,
   searchIndex,
   searchError,
+  history,
   query,
   results,
   assetVersion,
   onQueryChange,
   onClose,
   onSelectResult,
+  onViewAllResults,
+  onUseHistory,
+  onClearHistory,
 }: SearchPanelProps) {
   if (!open) return null
 
@@ -484,6 +518,37 @@ function SearchPanel({
           : '本地 search-index.json 还没有加载'}
         {hasQuery ? ` · ${formatNum(results.length)} results` : ''}
       </div>
+
+      {history.length > 0 && (
+        <div className="search-history">
+          <div className="search-history-head">
+            <span>最近搜索</span>
+            <button type="button" onClick={onClearHistory}>清空</button>
+          </div>
+          <div className="search-history-list">
+            {history.map(item => (
+              <button
+                key={`${item.query}-${item.updatedAt}`}
+                className="search-history-item"
+                onClick={() => onUseHistory(item.query)}
+                type="button"
+                title={item.query}
+              >
+                <strong>{item.query}</strong>
+                <span>{formatNum(item.resultCount)}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {hasQuery && results.length > 0 && (
+        <div className="search-pack-row">
+          <button className="search-pack-btn" onClick={onViewAllResults} type="button">
+            全选并查看 {formatNum(results.length)} 张
+          </button>
+        </div>
+      )}
 
       <div className="search-results">
         {!searchIndex && (
@@ -522,6 +587,84 @@ function SearchPanel({
   )
 }
 
+interface SearchPackViewProps {
+  pack: ResultPack
+  activeIndex: number
+  assetVersion: string | null
+  onSelectResult: (result: SearchResult) => void
+  onClose: () => void
+  onOpenSearch: () => void
+}
+
+function SearchPackView({
+  pack,
+  activeIndex,
+  assetVersion,
+  onSelectResult,
+  onClose,
+  onOpenSearch,
+}: SearchPackViewProps) {
+  const slideRefs = useRef<Array<HTMLButtonElement | null>>([])
+
+  useEffect(() => {
+    slideRefs.current[activeIndex]?.scrollIntoView({
+      block: 'start',
+      behavior: 'smooth',
+    })
+  }, [activeIndex])
+
+  return (
+    <main className="pack-main">
+      <section className="pack-toolbar">
+        <div className="reader-title-group">
+          <span className="reader-part-badge">Pack</span>
+          <div>
+            <h2>{pack.query || 'Search results'}</h2>
+            <p>{formatNum(pack.results.length)} selected results</p>
+          </div>
+        </div>
+
+        <div className="pack-actions">
+          <button className="text-btn" onClick={onOpenSearch} type="button">
+            修改搜索
+          </button>
+          <button className="text-btn primary" onClick={onClose} type="button">
+            返回单页
+          </button>
+        </div>
+      </section>
+
+      <section className="pack-flow-wrap">
+        <div className="pack-flow">
+          {pack.results.map((result, index) => (
+            <button
+              key={`${result.dir}-${result.slideNumber}`}
+              ref={node => {
+                slideRefs.current[index] = node
+              }}
+              className={`pack-slide${index === activeIndex ? ' active' : ''}`}
+              onClick={() => onSelectResult(result)}
+              type="button"
+              title={`Part ${result.part} Slide ${result.slideNumber}`}
+              aria-current={index === activeIndex ? 'true' : undefined}
+            >
+              <span className="pack-slide-meta">
+                <strong>{formatNum(index + 1)} / {formatNum(pack.results.length)}</strong>
+                <span>Part {result.part} · Slide {result.slideNumber}</span>
+              </span>
+              <img
+                src={versionedSrc(result.src, assetVersion)}
+                alt={`Part ${result.part} Slide ${result.slideNumber}`}
+                loading="lazy"
+              />
+            </button>
+          ))}
+        </div>
+      </section>
+    </main>
+  )
+}
+
 export default function App() {
   const [data, setData] = useState<Data | null>(null)
   const [slideOrder, setSlideOrder] = useState<SlideOrderData | null>(null)
@@ -529,6 +672,9 @@ export default function App() {
   const [searchError, setSearchError] = useState<string | null>(null)
   const [searchOpen, setSearchOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
+  const [searchHistory, setSearchHistory] = useState<SearchHistoryEntry[]>(loadStoredSearchHistory)
+  const [resultPack, setResultPack] = useState<ResultPack | null>(null)
+  const [packActiveIndex, setPackActiveIndex] = useState(0)
   const [error, setError] = useState<string | null>(null)
   const [activePartIndex, setActivePartIndex] = useState(loadStoredPart)
   const [currentSlideIndex, setCurrentSlideIndex] = useState(0)
@@ -644,6 +790,8 @@ export default function App() {
   }, [slides.length])
 
   const selectPart = useCallback((partIndex: number) => {
+    setResultPack(null)
+    setPackActiveIndex(0)
     setRestoredPartDir(null)
     setActivePartIndex(partIndex)
   }, [])
@@ -652,11 +800,28 @@ export default function App() {
     if (currentSlide) window.open(versionedSrc(currentSlide.src, assetVersion), '_blank', 'noopener,noreferrer')
   }, [assetVersion, currentSlide])
 
+  const rememberSearch = useCallback((query: string, resultCount: number) => {
+    const cleanQuery = query.replace(/\s+/g, ' ').trim()
+    if (cleanQuery.length < 2) return
+
+    setSearchHistory(prev => {
+      const next = [
+        { query: cleanQuery, resultCount, updatedAt: Date.now() },
+        ...prev.filter(item => item.query.toLowerCase() !== cleanQuery.toLowerCase()),
+      ].slice(0, SEARCH_HISTORY_LIMIT)
+
+      localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(next))
+      return next
+    })
+  }, [])
+
   const selectSearchResult = useCallback((result: SearchResult) => {
     const partIndex = data?.parts.findIndex(part => part.dir === result.dir) ?? -1
     if (partIndex < 0) return
 
+    rememberSearch(searchQuery, searchResults.length)
     setSearchOpen(false)
+    setResultPack(null)
     setPositions(prev => {
       const next = { ...prev, [result.dir]: result.slideNumber }
       localStorage.setItem(POSITIONS_KEY, JSON.stringify(next))
@@ -669,11 +834,68 @@ export default function App() {
       setRestoredPartDir(null)
       setActivePartIndex(partIndex)
     }
-  }, [activePartIndex, data, setSafeSlideIndex, slides])
+  }, [activePartIndex, data, rememberSearch, searchQuery, searchResults.length, setSafeSlideIndex, slides])
+
+  const viewAllSearchResults = useCallback(() => {
+    if (!searchResults.length) return
+    rememberSearch(searchQuery, searchResults.length)
+    setResultPack({
+      query: searchQuery.trim(),
+      results: searchResults,
+    })
+    setPackActiveIndex(0)
+    setSearchOpen(false)
+  }, [rememberSearch, searchQuery, searchResults])
+
+  const useHistoryQuery = useCallback((query: string) => {
+    setSearchQuery(query)
+    setSearchOpen(true)
+  }, [])
+
+  const clearSearchHistory = useCallback(() => {
+    setSearchHistory([])
+    localStorage.removeItem(SEARCH_HISTORY_KEY)
+  }, [])
+
+  useEffect(() => {
+    if (!resultPack) {
+      setPackActiveIndex(0)
+      return
+    }
+    setPackActiveIndex(index => Math.min(index, Math.max(0, resultPack.results.length - 1)))
+  }, [resultPack])
 
   useEffect(() => {
     const handleKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.target instanceof HTMLInputElement) return
+      if (event.key === 'Escape') {
+        if (searchOpen) setSearchOpen(false)
+        else if (resultPack) {
+          setResultPack(null)
+          setPackActiveIndex(0)
+        }
+        return
+      }
+      if (resultPack) {
+        if (event.key === 'ArrowDown') {
+          event.preventDefault()
+          setPackActiveIndex(index => Math.min(resultPack.results.length - 1, index + 1))
+        } else if (event.key === 'ArrowUp') {
+          event.preventDefault()
+          setPackActiveIndex(index => Math.max(0, index - 1))
+        } else if (event.key === 'Home') {
+          event.preventDefault()
+          setPackActiveIndex(0)
+        } else if (event.key === 'End') {
+          event.preventDefault()
+          setPackActiveIndex(resultPack.results.length - 1)
+        } else if (event.key === 'Enter') {
+          event.preventDefault()
+          const result = resultPack.results[packActiveIndex]
+          if (result) selectSearchResult(result)
+        }
+        return
+      }
       if (event.key === 'ArrowLeft') setSafeSlideIndex(currentSlideIndex - 1)
       else if (event.key === 'ArrowRight') setSafeSlideIndex(currentSlideIndex + 1)
       else if (event.key === 'Home') setSafeSlideIndex(0)
@@ -686,7 +908,7 @@ export default function App() {
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [currentSlideIndex, setSafeSlideIndex, slides.length])
+  }, [currentSlideIndex, packActiveIndex, resultPack, searchOpen, selectSearchResult, setSafeSlideIndex, slides.length])
 
   if (error) {
     return (
@@ -725,27 +947,49 @@ export default function App() {
           onSelectPart={selectPart}
         />
 
-        <ReaderView
-          part={activePart}
-          slides={slides}
-          currentSlideIndex={currentSlideIndex}
-          assetVersion={assetVersion}
-          searchOpen={searchOpen}
-          onSlideIndexChange={setSafeSlideIndex}
-          onOpenSource={openSource}
-          onToggleSearch={() => setSearchOpen(open => !open)}
-        />
+        {resultPack ? (
+          <SearchPackView
+            pack={resultPack}
+            activeIndex={packActiveIndex}
+            assetVersion={assetVersion}
+            onSelectResult={selectSearchResult}
+            onClose={() => {
+              setResultPack(null)
+              setPackActiveIndex(0)
+            }}
+            onOpenSearch={() => {
+              setResultPack(null)
+              setPackActiveIndex(0)
+              setSearchOpen(true)
+            }}
+          />
+        ) : (
+          <ReaderView
+            part={activePart}
+            slides={slides}
+            currentSlideIndex={currentSlideIndex}
+            assetVersion={assetVersion}
+            searchOpen={searchOpen}
+            onSlideIndexChange={setSafeSlideIndex}
+            onOpenSource={openSource}
+            onToggleSearch={() => setSearchOpen(open => !open)}
+          />
+        )}
 
         <SearchPanel
           open={searchOpen}
           searchIndex={searchIndex}
           searchError={searchError}
+          history={searchHistory}
           query={searchQuery}
           results={searchResults}
           assetVersion={assetVersion}
           onQueryChange={setSearchQuery}
           onClose={() => setSearchOpen(false)}
           onSelectResult={selectSearchResult}
+          onViewAllResults={viewAllSearchResults}
+          onUseHistory={useHistoryQuery}
+          onClearHistory={clearSearchHistory}
         />
       </div>
     </>
